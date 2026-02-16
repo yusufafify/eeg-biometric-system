@@ -1,0 +1,188 @@
+# ===========================
+# Python & Environment
+# ===========================
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# ===========================
+# Jupyter Notebook
+# ===========================
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ===========================
+# IDE & Editor
+# ===========================
+# VSCode
+.vscode/
+*.code-workspace
+
+# PyCharm
+.idea/
+*.iml
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# ===========================
+# Medical Data (CRITICAL)
+# ===========================
+# Raw EEG data files
+data/raw/**/*.edf
+data/raw/**/*.fif
+data/raw/**/*.mat
+data/raw/**/*.csv
+data/raw/**/*.txt
+data/raw/**/*.h5
+data/raw/**/*.hdf5
+
+# Processed data
+data/processed/**/*.pt
+data/processed/**/*.pth
+data/processed/**/*.npy
+data/processed/**/*.npz
+data/processed/**/*.pkl
+data/processed/**/*.pickle
+
+# Patient annotations (contains PHI)
+data/annotations/**/*.json
+data/annotations/**/*.xml
+data/annotations/**/*.csv
+
+# Keep directory structure (allow .gitkeep)
+!data/**/.gitkeep
+
+# ===========================
+# Model Checkpoints & Weights
+# ===========================
+models/**/*.pt
+models/**/*.pth
+models/**/*.onnx
+models/**/*.pb
+models/**/*.h5
+models/checkpoints/
+models/final/
+
+# Keep directory structure
+!models/**/.gitkeep
+
+# ===========================
+# Training Logs & Artifacts
+# ===========================
+# TensorBoard logs
+runs/
+logs/
+tensorboard_logs/
+*.tfevents.*
+
+# Weights & Biases
+wandb/
+
+# MLflow
+mlruns/
+
+# Training outputs
+outputs/
+results/
+*.log
+
+# ===========================
+# OS & System Files
+# ===========================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+.Trash-*
+
+# ===========================
+# Temporary & Cache Files
+# ===========================
+*.tmp
+*.temp
+*.cache
+.cache/
+tmp/
+temp/
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# ===========================
+# Documentation Build Artifacts
+# ===========================
+docs/_build/
+docs/.doctrees/
+site/
+
+# ===========================
+# Environment Variables
+# ===========================
+.env
+.env.local
+.env.*.local
+
+# ===========================
+# Other
+# ===========================
+# Backup files
+*.bak
+*.backup
+
+# Compressed files
+*.zip
+*.tar.gz
+*.rar
