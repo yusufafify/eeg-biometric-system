@@ -74,27 +74,16 @@ eeg-biometric-system/
 └── README.md
 ```
 
-## 🚀 Setup Instructions
+## 🚀 Quick Start
 
-### 1. Prerequisites
+### 1. Clone the Repository
 
-- Python 3.8 or higher
-- CUDA-capable GPU (recommended for training)
-
-### 2. Create Project Structure
-
-**On Windows (PowerShell):**
-```powershell
-.\setup_project.ps1
-```
-
-**On Linux/macOS:**
 ```bash
-chmod +x setup_project.sh
-./setup_project.sh
+git clone https://github.com/yusufafify/eeg-biometric-system.git
+cd eeg-biometric-system
 ```
 
-### 3. Create Virtual Environment
+### 2. Set Up Python Environment
 
 ```bash
 # Create virtual environment
@@ -107,19 +96,14 @@ venv\Scripts\activate
 source venv/bin/activate
 ```
 
-### 4. Install Dependencies
+### 3. Install Dependencies
 
 ```bash
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### 5. Verify Installation
-
-**Test the preprocessing pipeline:**
-```bash
-python src/data/preprocess.py
-```
+### 4. Verify Installation
 
 **Test the model architecture:**
 ```bash
@@ -132,6 +116,12 @@ Input shape: torch.Size([8, 23, 1024])
 ...
 Output shape: torch.Size([8, 2])
 ✓ Forward pass successful!
+```
+
+**Test the preprocessing pipeline:**
+```bash
+# Note: Requires a valid .edf file in data/raw/
+python src/data/preprocess.py
 ```
 
 ## 📊 Usage Example
