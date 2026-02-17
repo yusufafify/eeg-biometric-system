@@ -191,13 +191,6 @@ This project is licensed under the MIT License - see [LICENSE](LICENSE) file for
 
 ---
 
-## 👥 Contributors
-
-- **Lead ML Engineer**: [Your Name]
-- **Medical Advisor**: [Advisor Name] *(if applicable)*
-
----
-
 ## 📞 Contact
 
 For questions or collaboration inquiries:
