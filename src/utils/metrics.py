@@ -4,8 +4,6 @@ Domain-Specific Metrics for EEG Biometric Analysis
 This module provides specialized evaluation metrics for medical anomaly detection
 in EEG signals, focusing on clinical relevance (sensitivity, specificity, latency).
 
-Author: Lead ML Engineer
-Date: February 16, 2026
 Status: Placeholder implementation (ready for real metric calculation)
 """
 

@@ -5,8 +5,6 @@ This module implements the complete training pipeline for the CNN-LSTM model.
 Currently configured with a dummy dataset for architecture validation.
 Will be updated with real EEG data after data acquisition phase.
 
-Author: Lead ML Engineer
-Date: February 16, 2026
 Status: Stub implementation (ready for data integration)
 """
 
