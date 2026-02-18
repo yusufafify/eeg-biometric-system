@@ -186,3 +186,16 @@ site/
 *.zip
 *.tar.gz
 *.rar
+
+# ===========================
+# Virtual Environment
+# ===========================
+.venv/
+
+
+# ===========================
+# Data
+# ===========================
+data/raw
+data/processed
+data/splits
