@@ -13,7 +13,72 @@ Key preprocessing steps:
 import mne
 import numpy as np
 from pathlib import Path
-from typing import Tuple, Optional
+from typing import List, Tuple, Optional
+
+
+# The 18 standard bipolar EEG channels shared across all CHB-MIT subjects.
+# Channels 19-23+ vary between subjects and are excluded for consistency.
+TARGET_CHANNELS: List[str] = [
+    "FP1-F7", "F7-T7", "T7-P7", "P7-O1",
+    "FP1-F3", "F3-C3", "C3-P3", "P3-O1",
+    "FP2-F4", "F4-C4", "C4-P4", "P4-O2",
+    "FP2-F8", "F8-T8", "T8-P8", "P8-O2",
+    "FZ-CZ", "CZ-PZ",
+]
+
+
+def select_channels(
+    raw,
+    target_channels: Optional[List[str]] = None,
+):
+    """
+    Pick and reorder channels from an MNE Raw object.
+
+    Performs case-insensitive matching and strips common MNE prefixes
+    (e.g. ``EEG ``) so that channel names from the summary files match
+    the names stored inside the EDF.
+
+    Args:
+        raw: MNE Raw object (modified in-place).
+        target_channels: Channel names to keep.  Defaults to TARGET_CHANNELS.
+
+    Returns:
+        The same Raw object with only the requested channels.
+
+    Raises:
+        ValueError: If a requested channel cannot be found.
+    """
+    if target_channels is None:
+        target_channels = TARGET_CHANNELS
+
+    # Build normalised-name → actual-name mapping
+    def _norm(name: str) -> str:
+        n = name.strip().upper().replace(".", "-")
+        for prefix in ("EEG ", "EMG ", "EOG ", "ECG "):
+            if n.startswith(prefix):
+                n = n[len(prefix):]
+        return n
+
+    raw_map = {_norm(ch): ch for ch in raw.ch_names}
+
+    picks = []
+    for target in target_channels:
+        key = _norm(target)
+        if key in raw_map:
+            picks.append(raw_map[key])
+        # MNE appends "-0", "-1", … when channel names are duplicated
+        # in the EDF file (e.g. T8-P8 → T8-P8-0, T8-P8-1).
+        # We pick the first occurrence ("-0") as the canonical channel.
+        elif key + "-0" in raw_map:
+            picks.append(raw_map[key + "-0"])
+        else:
+            raise ValueError(
+                f"Channel '{target}' not found.  "
+                f"Available (normalised): {sorted(raw_map.keys())}"
+            )
+
+    raw.pick(picks)
+    return raw
 
 
 def load_eeg_data(
@@ -21,7 +86,8 @@ def load_eeg_data(
     notch_freq: float = 50.0,
     bandpass_low: float = 1.0,
     bandpass_high: float = 45.0,
-    verbose: bool = False
+    target_channels: Optional[List[str]] = None,
+    verbose: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, float]:
     """
     Load and preprocess EEG data from an EDF file.
@@ -53,6 +119,10 @@ def load_eeg_data(
     # Load EDF file using MNE
     # preload=True loads data into memory for faster filtering
     raw = mne.io.read_raw_edf(edf_file_path, preload=True, verbose=verbose)
+    
+    # Select target channels (before filtering for efficiency)
+    if target_channels is not None:
+        raw = select_channels(raw, target_channels)
     
     # Extract sampling frequency
     sfreq = raw.info['sfreq']

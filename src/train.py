@@ -1,179 +1,99 @@
 """
 Training Script for EEG-Based Biometric Analysis System
 
-This module implements the complete training pipeline for the CNN-LSTM model.
-Currently configured with a dummy dataset for architecture validation.
-Will be updated with real EEG data after data acquisition phase.
-
-Status: Stub implementation (ready for data integration)
+Production pipeline with:
+- Centralized config via config.yaml
+- Clinical metrics (Sensitivity, Specificity, F1, FPR/h)
+- F1-based best-model checkpointing (strict >)
+- Early stopping (patience configurable)
+- Gradient accumulation for large effective batch sizes
+- ReduceLROnPlateau scheduler on validation F1
+- TensorBoard logging
 """
 
 import argparse
+import logging
 import time
 from pathlib import Path
-from typing import Tuple, Dict, Any
+from typing import Dict, List
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
+from torch.optim.lr_scheduler import ReduceLROnPlateau, StepLR, CosineAnnealingLR
+from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
+
+from src.models.cnn_lstm import CNN_LSTM_Classifier
+from src.data.dataset import create_dataloaders
+from src.utils.config import load_config
+from src.utils.metrics import (
+    calculate_seizure_sensitivity,
+    calculate_specificity,
+    calculate_f1_score,
+    calculate_false_alarm_rate,
+)
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# Configuration
+# Metric helpers (safe wrappers around src.utils.metrics)
 # =============================================================================
 
-class TrainingConfig:
-    """Training hyperparameters and configuration."""
-    
-    # Data parameters
-    NUM_CHANNELS = 19  # Standard 10-20 EEG electrode system
-    SEQUENCE_LENGTH = 1280  # 5 seconds @ 256 Hz sampling rate
-    NUM_CLASSES = 2  # Binary classification (normal vs. anomaly)
-    
-    # Model architecture (placeholder values)
-    CNN_OUT_CHANNELS = 64
-    LSTM_HIDDEN_SIZE = 128
-    LSTM_NUM_LAYERS = 2
-    
-    # Training parameters
-    BATCH_SIZE = 32
-    LEARNING_RATE = 0.001
-    NUM_EPOCHS = 10
-    WEIGHT_DECAY = 1e-5
-    
-    # Paths
-    CHECKPOINT_DIR = Path("models/checkpoints")
-    LOG_DIR = Path("logs")
-    
-    # Device
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def _safe_metric(fn, y_true, y_pred, **kwargs) -> float:
+    """Call a metrics function, returning 0.0 on edge-case ValueError."""
+    try:
+        return fn(y_true, y_pred, **kwargs)
+    except ValueError:
+        return 0.0
 
 
-# =============================================================================
-# Dummy Model (Placeholder for actual CNN-LSTM architecture)
-# =============================================================================
-
-class DummyCNNLSTM(nn.Module):
+def compute_clinical_metrics(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    n_segments: int,
+    window_sec: float,
+    overlap_ratio: float,
+) -> Dict[str, float]:
     """
-    Simplified placeholder model for training loop validation.
-    
-    Architecture:
-        1. 1D CNN for feature extraction
-        2. LSTM for temporal modeling
-        3. Fully connected layer for classification
-    
-    NOTE: This will be replaced with the full model from src/model.py
+    Compute the full suite of clinical metrics.
+
+    FPR/h uses step_sec = window_sec * (1 - overlap_ratio) to avoid
+    double-counting time from overlapping windows.
     """
-    
-    def __init__(
-        self,
-        num_channels: int,
-        sequence_length: int,
-        num_classes: int,
-        cnn_out_channels: int = 64,
-        lstm_hidden_size: int = 128,
-        lstm_num_layers: int = 2
-    ):
-        super(DummyCNNLSTM, self).__init__()
-        
-        # 1D CNN layers
-        self.conv1 = nn.Conv1d(
-            in_channels=num_channels,
-            out_channels=cnn_out_channels,
-            kernel_size=7,
-            padding=3
-        )
-        self.relu = nn.ReLU()
-        self.pool = nn.MaxPool1d(kernel_size=2)
-        
-        # LSTM layer
-        self.lstm = nn.LSTM(
-            input_size=cnn_out_channels,
-            hidden_size=lstm_hidden_size,
-            num_layers=lstm_num_layers,
-            batch_first=True,
-            dropout=0.3
-        )
-        
-        # Fully connected output layer
-        self.fc = nn.Linear(lstm_hidden_size, num_classes)
-    
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass through the network.
-        
-        Args:
-            x: Input tensor of shape (batch_size, num_channels, sequence_length)
-        
-        Returns:
-            Output logits of shape (batch_size, num_classes)
-        """
-        # CNN feature extraction
-        x = self.conv1(x)  # (batch, cnn_out, seq_len)
-        x = self.relu(x)
-        x = self.pool(x)  # (batch, cnn_out, seq_len / 2)
-        
-        # Prepare for LSTM (batch, seq_len, features)
-        x = x.permute(0, 2, 1)
-        
-        # LSTM temporal modeling
-        lstm_out, (h_n, c_n) = self.lstm(x)
-        
-        # Use last hidden state
-        x = h_n[-1]  # (batch, lstm_hidden_size)
-        
-        # Classification
-        x = self.fc(x)  # (batch, num_classes)
-        
-        return x
+    correct = int((y_true == y_pred).sum())
+    accuracy = 100.0 * correct / max(len(y_true), 1)
+
+    sensitivity = _safe_metric(calculate_seizure_sensitivity, y_true, y_pred)
+    specificity = _safe_metric(calculate_specificity, y_true, y_pred)
+    f1 = _safe_metric(calculate_f1_score, y_true, y_pred)
+    far = _safe_metric(calculate_false_alarm_rate, y_true, y_pred)
+
+    step_sec = window_sec * (1.0 - overlap_ratio)
+    total_hours = (n_segments * step_sec) / 3600.0
+    fp_count = int(((y_true == 0) & (y_pred == 1)).sum())
+    fpr_per_hour = fp_count / max(total_hours, 1e-9)
+
+    return {
+        "accuracy": accuracy,
+        "sensitivity": sensitivity,
+        "specificity": specificity,
+        "f1": f1,
+        "far": far,
+        "fpr_per_hour": fpr_per_hour,
+    }
 
 
 # =============================================================================
-# Dummy Dataset Creation
-# =============================================================================
-
-def create_dummy_dataset(
-    num_samples: int = 1000,
-    num_channels: int = 19,
-    sequence_length: int = 1280,
-    num_classes: int = 2
-) -> Tuple[TensorDataset, TensorDataset]:
-    """
-    Create synthetic EEG-like data for training validation.
-    
-    Args:
-        num_samples: Number of samples to generate
-        num_channels: Number of EEG channels
-        sequence_length: Length of each signal sequence
-        num_classes: Number of output classes
-    
-    Returns:
-        Tuple of (train_dataset, val_dataset)
-    
-    NOTE: This will be replaced with real EEG data loading logic.
-    """
-    print("[INFO] Generating dummy dataset (will be replaced with real data)...")
-    
-    # Generate random EEG-like signals
-    X = torch.randn(num_samples, num_channels, sequence_length)
-    
-    # Generate random binary labels
-    y = torch.randint(0, num_classes, (num_samples,))
-    
-    # Split 80/20 train/val
-    split_idx = int(0.8 * num_samples)
-    
-    train_dataset = TensorDataset(X[:split_idx], y[:split_idx])
-    val_dataset = TensorDataset(X[split_idx:], y[split_idx:])
-    
-    print(f"[INFO] Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
-    
-    return train_dataset, val_dataset
-
-
-# =============================================================================
-# Training Loop
+# Training Loop (with gradient accumulation)
 # =============================================================================
 
 def train_one_epoch(
@@ -182,61 +102,52 @@ def train_one_epoch(
     criterion: nn.Module,
     optimizer: optim.Optimizer,
     device: torch.device,
-    epoch: int
+    epoch: int,
+    accum_steps: int = 1,
 ) -> Dict[str, float]:
     """
-    Train the model for one epoch.
-    
+    Train for one epoch with optional gradient accumulation.
+
     Args:
-        model: PyTorch model
-        dataloader: Training data loader
-        criterion: Loss function
-        optimizer: Optimizer
-        device: Device to train on
-        epoch: Current epoch number
-    
-    Returns:
-        Dictionary with training metrics
+        accum_steps: Number of micro-batches to accumulate before
+                     calling optimizer.step().  Effective batch size
+                     = dataloader.batch_size * accum_steps.
     """
     model.train()
     running_loss = 0.0
     correct = 0
     total = 0
-    
+
+    optimizer.zero_grad()
+
     for batch_idx, (inputs, targets) in enumerate(dataloader):
-        # Move data to device
         inputs, targets = inputs.to(device), targets.to(device)
-        
-        # Zero gradients
-        optimizer.zero_grad()
-        
-        # Forward pass
+
         outputs = model(inputs)
-        loss = criterion(outputs, targets)
-        
-        # Backward pass
+        loss = criterion(outputs, targets) / accum_steps  # scale loss
         loss.backward()
-        optimizer.step()
-        
-        # Metrics
-        running_loss += loss.item()
+
+        # Accumulate raw (unscaled) loss for logging
+        running_loss += loss.item() * accum_steps
         _, predicted = outputs.max(1)
         total += targets.size(0)
         correct += predicted.eq(targets).sum().item()
-        
-        # Log progress every 10 batches
-        if (batch_idx + 1) % 10 == 0:
-            print(f"  Batch [{batch_idx + 1}/{len(dataloader)}] | "
-                  f"Loss: {loss.item():.4f} | "
-                  f"Acc: {100. * correct / total:.2f}%")
-    
-    # Epoch metrics
-    epoch_loss = running_loss / len(dataloader)
-    epoch_acc = 100. * correct / total
-    
+
+        # Step optimizer every accum_steps batches, or on the last batch
+        if (batch_idx + 1) % accum_steps == 0 or (batch_idx + 1) == len(dataloader):
+            optimizer.step()
+            optimizer.zero_grad()
+
+        if (batch_idx + 1) % 50 == 0:
+            print(
+                f"  Batch [{batch_idx + 1}/{len(dataloader)}] | "
+                f"Loss: {loss.item() * accum_steps:.4f} | "
+                f"Acc: {100.0 * correct / total:.2f}%"
+            )
+
     return {
-        "loss": epoch_loss,
-        "accuracy": epoch_acc
+        "loss": running_loss / max(len(dataloader), 1),
+        "accuracy": 100.0 * correct / max(total, 1),
     }
 
 
@@ -244,212 +155,313 @@ def validate(
     model: nn.Module,
     dataloader: DataLoader,
     criterion: nn.Module,
-    device: torch.device
+    device: torch.device,
+    window_sec: float,
+    overlap_ratio: float,
 ) -> Dict[str, float]:
-    """
-    Validate the model on validation set.
-    
-    Args:
-        model: PyTorch model
-        dataloader: Validation data loader
-        criterion: Loss function
-        device: Device to validate on
-    
-    Returns:
-        Dictionary with validation metrics
-    """
+    """Validate and compute all clinical metrics."""
     model.eval()
     running_loss = 0.0
-    correct = 0
-    total = 0
-    
+    all_targets: List[int] = []
+    all_preds: List[int] = []
+
     with torch.no_grad():
         for inputs, targets in dataloader:
-            # Move data to device
             inputs, targets = inputs.to(device), targets.to(device)
-            
-            # Forward pass
             outputs = model(inputs)
             loss = criterion(outputs, targets)
-            
-            # Metrics
+
             running_loss += loss.item()
             _, predicted = outputs.max(1)
-            total += targets.size(0)
-            correct += predicted.eq(targets).sum().item()
-    
-    # Validation metrics
-    val_loss = running_loss / len(dataloader)
-    val_acc = 100. * correct / total
-    
-    return {
-        "loss": val_loss,
-        "accuracy": val_acc
-    }
+            all_targets.extend(targets.cpu().tolist())
+            all_preds.extend(predicted.cpu().tolist())
 
+    y_true = np.array(all_targets)
+    y_pred = np.array(all_preds)
+    n_segments = len(y_true)
+
+    metrics = compute_clinical_metrics(
+        y_true, y_pred, n_segments, window_sec, overlap_ratio,
+    )
+    metrics["loss"] = running_loss / max(len(dataloader), 1)
+    return metrics
+
+
+# =============================================================================
+# Checkpointing
+# =============================================================================
 
 def save_checkpoint(
     model: nn.Module,
     optimizer: optim.Optimizer,
+    scheduler,
     epoch: int,
-    val_metrics: Dict[str, float],
-    filepath: Path
+    metrics: Dict[str, float],
+    filepath: Path,
 ) -> None:
-    """
-    Save model checkpoint.
-    
-    Args:
-        model: Trained model
-        optimizer: Optimizer state
-        epoch: Current epoch
-        val_metrics: Validation metrics
-        filepath: Path to save checkpoint
-    """
-    checkpoint = {
+    """Save model checkpoint with full training state (includes scheduler)."""
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+    state = {
         "epoch": epoch,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
-        "val_loss": val_metrics["loss"],
-        "val_accuracy": val_metrics["accuracy"]
+        "metrics": metrics,
     }
-    
-    filepath.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(checkpoint, filepath)
-    print(f"[INFO] Checkpoint saved: {filepath}")
+    if scheduler is not None:
+        state["scheduler_state_dict"] = scheduler.state_dict()
+    torch.save(state, filepath)
+    print(f"[SAVE] Checkpoint saved: {filepath}")
 
 
 # =============================================================================
-# Main Training Function
+# Scheduler factory
+# =============================================================================
+
+def build_scheduler(optimizer, cfg_sched):
+    """Build a LR scheduler from config."""
+    name = cfg_sched.name
+    params = cfg_sched.params.to_dict()
+
+    if name == "ReduceLROnPlateau":
+        return ReduceLROnPlateau(optimizer, **params)
+    elif name == "StepLR":
+        return StepLR(optimizer, **params)
+    elif name == "CosineAnnealingLR":
+        return CosineAnnealingLR(optimizer, **params)
+    else:
+        raise ValueError(f"Unknown scheduler '{name}'")
+
+
+# =============================================================================
+# Main
 # =============================================================================
 
 def main(args: argparse.Namespace) -> None:
-    """
-    Main training pipeline.
-    
-    Args:
-        args: Command-line arguments
-    """
-    # Print configuration
+    """Main training pipeline driven by config.yaml."""
+    cfg = load_config(args.config)
+
+    # Allow CLI override of subjects
+    if args.subjects:
+        cfg.data.subjects = [s.strip() for s in args.subjects.split(",")]
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Reproducibility
+    torch.manual_seed(cfg.training.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(cfg.training.seed)
+
+    accum_steps = cfg.training.gradient_accumulation_steps
+    effective_batch = cfg.training.batch_size * accum_steps
+
     print("=" * 70)
     print("EEG BIOMETRIC SYSTEM - TRAINING PIPELINE")
     print("=" * 70)
-    print(f"Device: {TrainingConfig.DEVICE}")
-    print(f"Batch Size: {args.batch_size}")
-    print(f"Learning Rate: {args.learning_rate}")
-    print(f"Epochs: {args.epochs}")
+    print(f"  Device:          {device}")
+    print(f"  Config:          {args.config}")
+    print(f"  Subjects:        {cfg.data.subjects}")
+    print(f"  Batch Size:      {cfg.training.batch_size} x {accum_steps} accum = {effective_batch} effective")
+    print(f"  Optimizer:       {cfg.training.optimizer.name} (lr={cfg.training.optimizer.params.get('lr', 'N/A')})")
+    print(f"  Scheduler:       {cfg.training.scheduler.name}")
+    print(f"  Epochs:          {cfg.training.epochs}")
+    print(f"  Early Stop:      patience={cfg.training.early_stopping_patience}")
+    print(f"  Checkpoint Metric: Val F1-Score (strict >)")
     print("=" * 70)
     print()
-    
-    # Create dummy dataset (will be replaced with real data loader)
-    train_dataset, val_dataset = create_dummy_dataset(
-        num_samples=args.num_samples,
-        num_channels=TrainingConfig.NUM_CHANNELS,
-        sequence_length=TrainingConfig.SEQUENCE_LENGTH,
-        num_classes=TrainingConfig.NUM_CLASSES
+
+    # ------------------------------------------------------------------
+    # Data
+    # ------------------------------------------------------------------
+    train_loader, val_loader, train_subjects, val_subjects = create_dataloaders(
+        data_dir=cfg.data.raw_dir,
+        subjects=cfg.data.subjects,
+        processed_dir=cfg.data.processed_dir,
+        batch_size=cfg.training.batch_size,
+        val_ratio=cfg.data.val_ratio,
+        random_state=cfg.training.seed,
+        normalize=True,
+        num_workers=cfg.training.num_workers,
+        window_size_sec=cfg.data.window_size_sec,
+        overlap_ratio=cfg.data.overlap_ratio,
+        label_threshold=cfg.data.label_threshold,
     )
-    
-    # Create data loaders
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=0  # Set to 4+ when using real data
-    )
-    
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=0
-    )
-    
-    # Initialize model
-    model = DummyCNNLSTM(
-        num_channels=TrainingConfig.NUM_CHANNELS,
-        sequence_length=TrainingConfig.SEQUENCE_LENGTH,
-        num_classes=TrainingConfig.NUM_CLASSES,
-        cnn_out_channels=TrainingConfig.CNN_OUT_CHANNELS,
-        lstm_hidden_size=TrainingConfig.LSTM_HIDDEN_SIZE,
-        lstm_num_layers=TrainingConfig.LSTM_NUM_LAYERS
-    ).to(TrainingConfig.DEVICE)
-    
-    print(f"[INFO] Model initialized with {sum(p.numel() for p in model.parameters()):,} parameters")
+
+    print(f"[DATA] Train subjects: {train_subjects}")
+    print(f"[DATA] Val subjects:   {val_subjects}")
+    print(f"[DATA] Train batches:  {len(train_loader)}")
+    print(f"[DATA] Val batches:    {len(val_loader)}")
     print()
-    
-    # Define loss function and optimizer
+
+    # ------------------------------------------------------------------
+    # Model
+    # ------------------------------------------------------------------
+    model = CNN_LSTM_Classifier(
+        num_channels=cfg.model.num_channels,
+        sequence_length=cfg.model.sequence_length,
+        num_classes=cfg.model.num_classes,
+        cnn_channels=cfg.model.cnn_channels,
+        kernel_size=cfg.model.kernel_size,
+        lstm_hidden_size=cfg.model.lstm_hidden_size,
+        lstm_num_layers=cfg.model.lstm_num_layers,
+        dropout_rate=cfg.model.dropout_rate,
+    ).to(device)
+
+    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"[MODEL] CNN_LSTM_Classifier ({total_params:,} trainable params)")
+    print()
+
+    # ------------------------------------------------------------------
+    # Loss, optimiser, scheduler, TensorBoard
+    # ------------------------------------------------------------------
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(
-        model.parameters(),
-        lr=args.learning_rate,
-        weight_decay=TrainingConfig.WEIGHT_DECAY
-    )
-    
+
+    # Build optimizer from config
+    opt_name = cfg.training.optimizer.name
+    opt_params = cfg.training.optimizer.params.to_dict()
+    opt_cls_map = {
+        "Adam": optim.Adam,
+        "AdamW": optim.AdamW,
+        "SGD": optim.SGD,
+        "RMSprop": optim.RMSprop,
+    }
+    if opt_name not in opt_cls_map:
+        raise ValueError(
+            f"Unknown optimizer '{opt_name}'. "
+            f"Supported: {list(opt_cls_map.keys())}"
+        )
+    optimizer = opt_cls_map[opt_name](model.parameters(), **opt_params)
+    print(f"[OPTIM] {opt_name} with {opt_params}")
+
+    # Build scheduler
+    scheduler = build_scheduler(optimizer, cfg.training.scheduler)
+    print(f"[SCHED] {cfg.training.scheduler.name} with {cfg.training.scheduler.params.to_dict()}")
+
+    tb_dir = Path(cfg.training.log_dir)
+    tb_dir.mkdir(parents=True, exist_ok=True)
+    writer = SummaryWriter(log_dir=str(tb_dir))
+
+    ckpt_dir = Path(cfg.training.checkpoint_dir)
+
+    # ------------------------------------------------------------------
     # Training loop
-    best_val_acc = 0.0
-    
-    for epoch in range(1, args.epochs + 1):
-        print(f"\nEpoch [{epoch}/{args.epochs}]")
+    # ------------------------------------------------------------------
+    best_val_f1 = -1.0
+    epochs_no_improve = 0
+    patience = cfg.training.early_stopping_patience
+
+    for epoch in range(1, cfg.training.epochs + 1):
+        current_lr = optimizer.param_groups[0]["lr"]
+        print(f"\nEpoch [{epoch}/{cfg.training.epochs}]  (LR: {current_lr:.2e})")
         print("-" * 70)
-        
-        # Train
-        start_time = time.time()
+
+        t0 = time.time()
+
+        # ---- Train ----
         train_metrics = train_one_epoch(
-            model, train_loader, criterion, optimizer,
-            TrainingConfig.DEVICE, epoch
+            model, train_loader, criterion, optimizer, device, epoch,
+            accum_steps=accum_steps,
         )
-        
-        # Validate
+
+        # ---- Validate ----
         val_metrics = validate(
-            model, val_loader, criterion, TrainingConfig.DEVICE
+            model, val_loader, criterion, device,
+            window_sec=cfg.data.window_size_sec,
+            overlap_ratio=cfg.data.overlap_ratio,
         )
-        
-        epoch_time = time.time() - start_time
-        
-        # Print epoch summary
-        print(f"\n[SUMMARY] Epoch {epoch} | Time: {epoch_time:.2f}s")
-        print(f"  Train Loss: {train_metrics['loss']:.4f} | Train Acc: {train_metrics['accuracy']:.2f}%")
-        print(f"  Val Loss: {val_metrics['loss']:.4f} | Val Acc: {val_metrics['accuracy']:.2f}%")
-        
-        # Save best model
-        if val_metrics["accuracy"] > best_val_acc:
-            best_val_acc = val_metrics["accuracy"]
+
+        elapsed = time.time() - t0
+
+        # ---- LR Scheduler step ----
+        if isinstance(scheduler, ReduceLROnPlateau):
+            scheduler.step(val_metrics["f1"])
+        else:
+            scheduler.step()
+
+        # ---- Console output ----
+        print(f"\n[EPOCH {epoch}] Time: {elapsed:.1f}s")
+        print(
+            f"  Train  | Loss: {train_metrics['loss']:.4f} "
+            f"| Acc: {train_metrics['accuracy']:.2f}%"
+        )
+        print(
+            f"  Val    | Loss: {val_metrics['loss']:.4f} "
+            f"| Acc: {val_metrics['accuracy']:.2f}%"
+        )
+        print(
+            f"  Clinical | F1: {val_metrics['f1']:.4f} "
+            f"| Sens: {val_metrics['sensitivity']:.4f} "
+            f"| Spec: {val_metrics['specificity']:.4f} "
+            f"| FPR/h: {val_metrics['fpr_per_hour']:.2f}"
+        )
+
+        # ---- TensorBoard ----
+        writer.add_scalars("Loss", {
+            "train": train_metrics["loss"],
+            "val": val_metrics["loss"],
+        }, epoch)
+        writer.add_scalars("Accuracy", {
+            "train": train_metrics["accuracy"],
+            "val": val_metrics["accuracy"],
+        }, epoch)
+        writer.add_scalar("Val/F1", val_metrics["f1"], epoch)
+        writer.add_scalar("Val/Sensitivity", val_metrics["sensitivity"], epoch)
+        writer.add_scalar("Val/Specificity", val_metrics["specificity"], epoch)
+        writer.add_scalar("Val/FPR_per_hour", val_metrics["fpr_per_hour"], epoch)
+        writer.add_scalar("LR", current_lr, epoch)
+
+        # ---- F1-based checkpointing (strict >) ----
+        if val_metrics["f1"] > best_val_f1:
+            best_val_f1 = val_metrics["f1"]
             save_checkpoint(
-                model, optimizer, epoch, val_metrics,
-                TrainingConfig.CHECKPOINT_DIR / "best_model.pt"
+                model, optimizer, scheduler, epoch, val_metrics,
+                ckpt_dir / "best_model.pth",
             )
-            print(f"  ✓ New best model! Val Acc: {best_val_acc:.2f}%")
-    
+            print(f"  >> New best model! Val F1: {best_val_f1:.4f}")
+            epochs_no_improve = 0
+        else:
+            epochs_no_improve += 1
+            print(
+                f"  -- No F1 improvement for {epochs_no_improve}/{patience} epochs"
+            )
+
+        # ---- Early stopping ----
+        if epochs_no_improve >= patience:
+            print(f"\n[EARLY STOP] No F1 improvement for {patience} epochs. Stopping.")
+            break
+
+    # Always save a final checkpoint
+    save_checkpoint(
+        model, optimizer, scheduler, epoch, val_metrics,
+        ckpt_dir / "last_model.pth",
+    )
+
+    writer.close()
+
     print("\n" + "=" * 70)
     print("TRAINING COMPLETE")
-    print(f"Best Validation Accuracy: {best_val_acc:.2f}%")
+    print(f"  Best Val F1:   {best_val_f1:.4f}")
+    print(f"  Best model:    {ckpt_dir / 'best_model.pth'}")
+    print(f"  Last model:    {ckpt_dir / 'last_model.pth'}")
+    print(f"  TensorBoard:   tensorboard --logdir {cfg.training.log_dir}")
     print("=" * 70)
 
 
 # =============================================================================
-# CLI Entry Point
+# CLI
 # =============================================================================
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Train EEG biometric classification model"
-    )
-    
-    parser.add_argument(
-        "--epochs", type=int, default=10,
-        help="Number of training epochs (default: 10)"
+        description="Train EEG seizure detection model"
     )
     parser.add_argument(
-        "--batch_size", type=int, default=32,
-        help="Batch size for training (default: 32)"
+        "--config", type=str, default="config.yaml",
+        help="Path to YAML config file (default: config.yaml)",
     )
     parser.add_argument(
-        "--learning_rate", type=float, default=0.001,
-        help="Learning rate (default: 0.001)"
+        "--subjects", type=str, default=None,
+        help="Override config subjects (comma-separated, e.g. chb01,chb02)",
     )
-    parser.add_argument(
-        "--num_samples", type=int, default=1000,
-        help="Number of dummy samples to generate (default: 1000)"
-    )
-    
+
     args = parser.parse_args()
     main(args)

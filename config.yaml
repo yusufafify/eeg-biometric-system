@@ -1,0 +1,76 @@
+# ==============================================================================
+# EEG Biometric System - Central Configuration
+# ==============================================================================
+# This file is the single source of truth for all pipeline parameters.
+# Override at runtime:  python src/train.py --config path/to/other.yaml
+# ==============================================================================
+
+data:
+  raw_dir: data/raw/chbmit
+  processed_dir: data/processed
+  subjects:
+    - chb01
+    - chb02
+    - chb03
+    - chb04
+    - chb05
+    - chb06
+    - chb07
+    - chb08
+    - chb09
+    - chb10
+    - chb11
+    - chb12
+    - chb13
+    - chb14
+    - chb15
+    - chb16
+    - chb17
+    - chb18
+  window_size_sec: 4.0
+  overlap_ratio: 0.5
+  label_threshold: 0.25
+  val_ratio: 0.2 # applied at SUBJECT level, not segment level
+
+model:
+  num_channels: 18 # 18 standard bipolar EEG channels
+  sequence_length: 1024 # 4 seconds @ 256 Hz
+  num_classes: 2 # binary: normal vs seizure
+  cnn_channels: [64, 128, 256]
+  kernel_size: 5
+  lstm_hidden_size: 128
+  lstm_num_layers: 2
+  dropout_rate: 0.5
+
+training:
+  batch_size: 32
+  epochs: 30
+  seed: 42
+  num_workers: 0
+  early_stopping_patience: 10
+  gradient_accumulation_steps: 4 # effective batch = 32 * 4 = 128
+  checkpoint_dir: models/checkpoints
+  log_dir: runs
+
+  optimizer:
+    name: Adam # Adam | AdamW | SGD | RMSprop
+    params:
+      lr: 0.001
+      weight_decay: 0.00001
+
+  scheduler:
+    name: ReduceLROnPlateau # ReduceLROnPlateau | StepLR | CosineAnnealingLR
+    params:
+      mode: max # maximize val F1
+      factor: 0.5 # halve LR on plateau
+      patience: 5 # epochs before reducing
+      min_lr: 0.000001
+
+evaluation:
+  test_subjects:
+    - chb19
+    - chb20
+    - chb21
+    - chb22
+    - chb23
+    - chb24
