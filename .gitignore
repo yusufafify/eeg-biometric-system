@@ -94,11 +94,11 @@ data/annotations/**/*.csv
 # Model Checkpoints & Weights
 # ===========================
 models/**/*.pt
-models/**/*.pth
+# models/**/*.pth
 models/**/*.onnx
 models/**/*.pb
 models/**/*.h5
-models/checkpoints/
+# models/checkpoints/
 models/final/
 
 # Keep directory structure
