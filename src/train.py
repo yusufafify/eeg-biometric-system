@@ -26,6 +26,7 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
 from src.models.cnn_lstm import CNN_LSTM_Classifier
+from src.models.focal_loss import FocalLoss
 from src.data.dataset import create_dataloaders
 from src.utils.config import load_config
 from src.utils.metrics import (
@@ -330,10 +331,16 @@ def main(args: argparse.Namespace) -> None:
     print()
 
     # ------------------------------------------------------------------
-    # Loss — plain CE; class imbalance is handled by WeightedRandomSampler
+    # Loss — Focal Loss handles class imbalance
     # ------------------------------------------------------------------
-    criterion = nn.CrossEntropyLoss()
-    print("[LOSS] Unweighted CrossEntropyLoss (sampler handles imbalance)")
+    # Using RetinaNet optimal baseline for extreme imbalance: 
+    # alpha=[0.10, 0.90] (Normal, Seizure) and gamma=2.0.
+    # This avoids destroying majority class gradients.
+    # The corrected PyTorch Focal Loss initialization
+    alpha = torch.tensor([0.10, 0.90], dtype=torch.float32).to(device)
+    criterion = FocalLoss(alpha=alpha, gamma=2.0)
+    
+    print(f"[LOSS] FocalLoss(gamma=2.0) with static alpha: {alpha.cpu().numpy()}")
 
     # Build optimizer from config
     opt_name = cfg.training.optimizer.name

@@ -23,6 +23,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 
 from src.data.dataset import EEGDataset
 from src.models.cnn_lstm import CNN_LSTM_Classifier
+from src.models.focal_loss import FocalLoss
 
 
 def main():
@@ -79,7 +80,7 @@ def main():
         num_classes=2,
         cnn_channels=[64, 128, 256],
         kernel_size=5,
-        lstm_hidden_size=128,
+        lstm_hidden_size=64,
         lstm_num_layers=2,
         dropout_rate=0.0,  # no dropout for overfit test
     ).to(DEVICE)
@@ -87,7 +88,8 @@ def main():
     params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Model parameters: {params:,}")
 
-    criterion = nn.CrossEntropyLoss()
+    alpha = torch.tensor([0.75, 0.25]).float().to(DEVICE)
+    criterion = FocalLoss(alpha=alpha, gamma=2.0)
     optimizer = optim.Adam(model.parameters(), lr=LR)
 
     # 4. Train on the same batch for N epochs

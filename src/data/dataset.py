@@ -401,19 +401,14 @@ def create_dataloaders(
     train_ds = EEGDataset(processed_dir, train_subjects, normalize=normalize)
     val_ds = EEGDataset(processed_dir, val_subjects, normalize=normalize)
 
-    # WeightedRandomSampler for training ONLY
+    # Natural distribution for training (no sampler)
     counts = np.bincount(train_ds.labels, minlength=2)
-    w = 1.0 / np.maximum(counts, 1).astype(np.float64)
-    sampler = WeightedRandomSampler(
-        torch.from_numpy(w[train_ds.labels]).double(), len(train_ds), replacement=True
-    )
-
-    logger.info("Train: %d samples (sz=%d, normal=%d)",
+    logger.info("Train: %d samples (sz=%d, normal=%d) - Natural distribution",
                 len(train_ds), counts[1] if len(counts) > 1 else 0, counts[0])
-    logger.info("Val:   %d samples (natural distribution, no sampler)", len(val_ds))
+    logger.info("Val:   %d samples (natural distribution)", len(val_ds))
 
     train_loader = DataLoader(
-        train_ds, batch_size=batch_size, sampler=sampler,
+        train_ds, batch_size=batch_size, shuffle=True,
         num_workers=num_workers, pin_memory=True,
     )
     val_loader = DataLoader(
