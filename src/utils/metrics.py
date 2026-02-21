@@ -193,6 +193,41 @@ def calculate_f1_score(
     return float(f1)
 
 
+def calculate_macro_f1(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+) -> float:
+    """
+    Calculate macro-averaged F1 score across all classes.
+
+    Computes F1 for each class independently and returns the unweighted mean.
+    This gives equal importance to each class regardless of support.
+
+    Args:
+        y_true: Ground truth labels
+        y_pred: Predicted labels
+
+    Returns:
+        Macro F1 score in range [0.0, 1.0]
+    """
+    classes = np.unique(np.concatenate([y_true, y_pred]))
+    f1_scores = []
+    for cls in classes:
+        tp = ((y_true == cls) & (y_pred == cls)).sum()
+        fp = ((y_true != cls) & (y_pred == cls)).sum()
+        fn = ((y_true == cls) & (y_pred != cls)).sum()
+
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+
+        if (precision + recall) == 0:
+            f1_scores.append(0.0)
+        else:
+            f1_scores.append(2 * precision * recall / (precision + recall))
+
+    return float(np.mean(f1_scores)) if f1_scores else 0.0
+
+
 # =============================================================================
 # Real-Time Performance Metrics
 # =============================================================================

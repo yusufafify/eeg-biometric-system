@@ -327,36 +327,81 @@ def create_dataloaders(
     if len(available) < 2:
         raise ValueError(f"Need >=2 subjects for split, got {len(available)}.")
 
-    # Stratified subject-wise split
-    has_sz = {}
+    # ------------------------------------------------------------------
+    # Subject-level seizure-segment-proportional stratified split
+    # ------------------------------------------------------------------
+    # 1. Count seizure segments per subject
+    subj_sz_count: Dict[str, int] = {}
+    subj_total_count: Dict[str, int] = {}
     for subj in available:
         mf = proc / subj / "manifest.txt"
         stems = mf.read_text("utf-8").strip().split("\n")
-        any_sz = any(
-            np.load(proc / subj / f"{s}_labels.npy").sum() > 0 for s in stems
-        )
-        has_sz[subj] = any_sz
+        sz_total = 0
+        seg_total = 0
+        for stem in stems:
+            labels = np.load(proc / subj / f"{stem}_labels.npy")
+            sz_total += int(labels.sum())
+            seg_total += len(labels)
+        subj_sz_count[subj] = sz_total
+        subj_total_count[subj] = seg_total
 
-    sz_subj = [s for s in available if has_sz[s]]
-    no_subj = [s for s in available if not has_sz[s]]
+    total_seizure = sum(subj_sz_count.values())
+    target_val_seizure = val_ratio * total_seizure
 
+    logger.info("[SPLIT] Total seizure segments across all subjects: %d", total_seizure)
+    logger.info("[SPLIT] Target val seizure segments (%.0f%%): %d",
+                val_ratio * 100, int(target_val_seizure))
+
+    # 2. Separate seizure-bearing vs normal-only subjects
+    sz_subjects = [s for s in available if subj_sz_count[s] > 0]
+    no_subjects = [s for s in available if subj_sz_count[s] == 0]
+
+    # 3. Sort seizure subjects by count descending for greedy packing
     rng = np.random.RandomState(random_state)
-    rng.shuffle(sz_subj)
-    rng.shuffle(no_subj)
+    rng.shuffle(sz_subjects)  # randomise before stable sort for tie-breaking
+    sz_subjects.sort(key=lambda s: subj_sz_count[s], reverse=True)
 
-    n_val_sz = max(1, int(len(sz_subj) * val_ratio))
-    n_val_no = max(0, int(len(no_subj) * val_ratio))
+    # 4. Greedily assign seizure subjects to val until target is met
+    val_subjects: List[str] = []
+    train_subjects: List[str] = []
+    val_sz_so_far = 0
 
-    val_subjects = sz_subj[:n_val_sz] + no_subj[:n_val_no]
-    train_subjects = sz_subj[n_val_sz:] + no_subj[n_val_no:]
+    for subj in sz_subjects:
+        if val_sz_so_far < target_val_seizure and len(val_subjects) < len(sz_subjects) - 1:
+            # Keep at least 1 seizure subject in training
+            val_subjects.append(subj)
+            val_sz_so_far += subj_sz_count[subj]
+        else:
+            train_subjects.append(subj)
+
+    # 5. Split normal-only subjects proportionally
+    rng.shuffle(no_subjects)
+    n_val_no = max(0, int(len(no_subjects) * val_ratio))
+    val_subjects.extend(no_subjects[:n_val_no])
+    train_subjects.extend(no_subjects[n_val_no:])
+
+    # Log the split details
+    val_sz_total = sum(subj_sz_count[s] for s in val_subjects)
+    train_sz_total = sum(subj_sz_count[s] for s in train_subjects)
+    logger.info("[SPLIT] Val seizure subjects & counts: %s",
+                {s: subj_sz_count[s] for s in val_subjects if subj_sz_count[s] > 0})
+    logger.info("[SPLIT] Val seizure segments: %d / %d (%.1f%%)",
+                val_sz_total, total_seizure,
+                100.0 * val_sz_total / max(total_seizure, 1))
+    logger.info("[SPLIT] Train seizure segments: %d / %d (%.1f%%)",
+                train_sz_total, total_seizure,
+                100.0 * train_sz_total / max(total_seizure, 1))
 
     logger.info("Train subjects (%d): %s", len(train_subjects), train_subjects)
     logger.info("Val subjects   (%d): %s", len(val_subjects), val_subjects)
 
+    # ------------------------------------------------------------------
+    # Build datasets
+    # ------------------------------------------------------------------
     train_ds = EEGDataset(processed_dir, train_subjects, normalize=normalize)
     val_ds = EEGDataset(processed_dir, val_subjects, normalize=normalize)
 
-    # WeightedRandomSampler for training
+    # WeightedRandomSampler for training ONLY
     counts = np.bincount(train_ds.labels, minlength=2)
     w = 1.0 / np.maximum(counts, 1).astype(np.float64)
     sampler = WeightedRandomSampler(
@@ -365,7 +410,7 @@ def create_dataloaders(
 
     logger.info("Train: %d samples (sz=%d, normal=%d)",
                 len(train_ds), counts[1] if len(counts) > 1 else 0, counts[0])
-    logger.info("Val:   %d samples", len(val_ds))
+    logger.info("Val:   %d samples (natural distribution, no sampler)", len(val_ds))
 
     train_loader = DataLoader(
         train_ds, batch_size=batch_size, sampler=sampler,

@@ -32,6 +32,7 @@ from src.utils.metrics import (
     calculate_seizure_sensitivity,
     calculate_specificity,
     calculate_f1_score,
+    calculate_macro_f1,
     calculate_false_alarm_rate,
 )
 
@@ -75,6 +76,7 @@ def compute_clinical_metrics(
     sensitivity = _safe_metric(calculate_seizure_sensitivity, y_true, y_pred)
     specificity = _safe_metric(calculate_specificity, y_true, y_pred)
     f1 = _safe_metric(calculate_f1_score, y_true, y_pred)
+    macro_f1 = _safe_metric(calculate_macro_f1, y_true, y_pred)
     far = _safe_metric(calculate_false_alarm_rate, y_true, y_pred)
 
     step_sec = window_sec * (1.0 - overlap_ratio)
@@ -87,6 +89,7 @@ def compute_clinical_metrics(
         "sensitivity": sensitivity,
         "specificity": specificity,
         "f1": f1,
+        "macro_f1": macro_f1,
         "far": far,
         "fpr_per_hour": fpr_per_hour,
     }
@@ -117,6 +120,8 @@ def train_one_epoch(
     running_loss = 0.0
     correct = 0
     total = 0
+    all_targets: List[int] = []
+    all_preds: List[int] = []
 
     optimizer.zero_grad()
 
@@ -132,6 +137,8 @@ def train_one_epoch(
         _, predicted = outputs.max(1)
         total += targets.size(0)
         correct += predicted.eq(targets).sum().item()
+        all_targets.extend(targets.cpu().tolist())
+        all_preds.extend(predicted.cpu().tolist())
 
         # Step optimizer every accum_steps batches, or on the last batch
         if (batch_idx + 1) % accum_steps == 0 or (batch_idx + 1) == len(dataloader):
@@ -139,15 +146,27 @@ def train_one_epoch(
             optimizer.zero_grad()
 
         if (batch_idx + 1) % 50 == 0:
+            running_macro_f1 = _safe_metric(
+                calculate_macro_f1,
+                np.array(all_targets),
+                np.array(all_preds),
+            )
             print(
                 f"  Batch [{batch_idx + 1}/{len(dataloader)}] | "
                 f"Loss: {loss.item() * accum_steps:.4f} | "
-                f"Acc: {100.0 * correct / total:.2f}%"
+                f"Acc: {100.0 * correct / total:.2f}% | "
+                f"Macro-F1: {running_macro_f1:.4f}"
             )
+
+    # Compute train macro F1
+    y_true = np.array(all_targets)
+    y_pred = np.array(all_preds)
+    train_macro_f1 = _safe_metric(calculate_macro_f1, y_true, y_pred)
 
     return {
         "loss": running_loss / max(len(dataloader), 1),
         "accuracy": 100.0 * correct / max(total, 1),
+        "macro_f1": train_macro_f1,
     }
 
 
@@ -311,9 +330,10 @@ def main(args: argparse.Namespace) -> None:
     print()
 
     # ------------------------------------------------------------------
-    # Loss, optimiser, scheduler, TensorBoard
+    # Loss — plain CE; class imbalance is handled by WeightedRandomSampler
     # ------------------------------------------------------------------
     criterion = nn.CrossEntropyLoss()
+    print("[LOSS] Unweighted CrossEntropyLoss (sampler handles imbalance)")
 
     # Build optimizer from config
     opt_name = cfg.training.optimizer.name
@@ -381,11 +401,13 @@ def main(args: argparse.Namespace) -> None:
         print(f"\n[EPOCH {epoch}] Time: {elapsed:.1f}s")
         print(
             f"  Train  | Loss: {train_metrics['loss']:.4f} "
-            f"| Acc: {train_metrics['accuracy']:.2f}%"
+            f"| Acc: {train_metrics['accuracy']:.2f}% "
+            f"| Macro-F1: {train_metrics['macro_f1']:.4f}"
         )
         print(
             f"  Val    | Loss: {val_metrics['loss']:.4f} "
-            f"| Acc: {val_metrics['accuracy']:.2f}%"
+            f"| Acc: {val_metrics['accuracy']:.2f}% "
+            f"| Macro-F1: {val_metrics['macro_f1']:.4f}"
         )
         print(
             f"  Clinical | F1: {val_metrics['f1']:.4f} "
