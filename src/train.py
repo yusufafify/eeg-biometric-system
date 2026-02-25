@@ -337,7 +337,7 @@ def main(args: argparse.Namespace) -> None:
     # alpha=[0.10, 0.90] (Normal, Seizure) and gamma=2.0.
     # This avoids destroying majority class gradients.
     # The corrected PyTorch Focal Loss initialization
-    alpha = torch.tensor([0.10, 0.90], dtype=torch.float32).to(device)
+    alpha = torch.tensor([0.25, 0.75], dtype=torch.float32).to(device)
     criterion = FocalLoss(alpha=alpha, gamma=2.0)
     
     print(f"[LOSS] FocalLoss(gamma=2.0) with static alpha: {alpha.cpu().numpy()}")
