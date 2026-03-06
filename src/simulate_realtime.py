@@ -376,12 +376,12 @@ def main(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------
     # Step 2: Load patient-independent model (best_model.pth)
     # ------------------------------------------------------------------
-    print("[STEP 2] Loading patient-independent model (best_model.pth) ...")
-    ckpt_path = Path(cfg.training.checkpoint_dir) / "best_model.pth"
+    print("[STEP 2] Loading patient-specific model ...")
+    ckpt_path = Path(cfg.training.checkpoint_dir) / "patient_specific_model.pth"
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 
-    ckpt  = torch.load(ckpt_path, map_location=device, weights_only=True)
+    ckpt  = torch.load(ckpt_path, map_location=device, weights_only=False)
     model = CNN_LSTM_Classifier(
         num_channels     = cfg.model.num_channels,
         sequence_length  = cfg.model.sequence_length,
@@ -394,8 +394,13 @@ def main(args: argparse.Namespace) -> None:
     ).to(device)
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
-    print(f"  Loaded checkpoint from epoch {ckpt['epoch']} "
-          f"(val F1={ckpt['metrics'].get('f1', 'N/A'):.4f})")
+
+    # Handle both best_model.pth and patient_specific_model.pth formats
+    epochs_info = ckpt.get("epoch", ckpt.get("epochs_finetuned", "?"))
+    metrics     = ckpt.get("metrics", ckpt.get("finetune_metrics", {}))
+    f1_val      = metrics.get("f1", metrics.get("macro_f1", "N/A"))
+    f1_str      = f"{f1_val:.4f}" if isinstance(f1_val, (int, float)) else str(f1_val)
+    print(f"  Loaded checkpoint (epochs={epochs_info}, F1={f1_str})")
     print(f"  Normalization: Z-score via EEGDataset (matches Phase 1 training)")
     print()
 

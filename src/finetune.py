@@ -50,6 +50,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 
 from src.data.calibration_loader import build_calibration_split
+from src.data.dataset import EEGDataset
 from src.models.cnn_lstm import CNN_LSTM_Classifier
 from src.models.focal_loss import FocalLoss
 from src.utils.config import load_config
@@ -224,51 +225,49 @@ def main(args: argparse.Namespace) -> None:
     print()
 
     # ------------------------------------------------------------------
-    # Step 2: Normalise calibration data using its own statistics (Min-Max)
+    # Step 2: Normalise calibration data (Z-Score via EEGDataset)
     # ------------------------------------------------------------------
-    # IMPORTANT: We use Min-Max normalization to match the base model's
-    # training pipeline.  Stats are fitted on the calibration set ONLY —
-    # no leakage from test-set amplitudes.
-    ch_min   = cal_segs.min(axis=(0, 2), keepdims=True)   # (1, C, 1)
-    ch_max   = cal_segs.max(axis=(0, 2), keepdims=True)   # (1, C, 1)
-    range_val = ch_max - ch_min
-    range_val[range_val == 0] = 1e-8                       # avoid div-by-zero
+    # Instantiate dataset just to extract the exact baseline statistics
+    # that will be used during real-time inference.
+    dummy_ds = EEGDataset(
+        processed_dir=cfg.data.processed_dir,
+        subjects=[target_patient],
+        normalize=True,
+    )
+    ch_mean = dummy_ds.ch_mean
+    ch_std  = dummy_ds.ch_std
 
-    cal_segs_norm = (cal_segs - ch_min) / range_val        # → [0, 1] per channel
+    cal_segs_norm = (cal_segs - ch_mean) / ch_std
 
     # Convert to tensors
-    X_cal = torch.from_numpy(cal_segs_norm)               # (N, C, T)
-    y_cal = torch.from_numpy(cal_labels)                  # (N,)
+    X_cal = torch.from_numpy(cal_segs_norm.astype(np.float32))  # (N, C, T)
+    y_cal = torch.from_numpy(cal_labels)                        # (N,)
 
     cal_dataset = TensorDataset(X_cal, y_cal)
 
     # ------------------------------------------------------------------
     # WeightedRandomSampler — enforce a 50/50 class split per batch
     # ------------------------------------------------------------------
-    # With ~2700 normal vs ~150 seizure segments the model would collapse
-    # to predicting "Normal" for everything (0.0 Sensitivity).  The
-    # sampler draws each sample with probability inversely proportional to
-    # its class frequency, so every batch is effectively balanced.
-    counts        = np.bincount(cal_labels)                # [n_normal, n_seizure]
-    class_weights = 1.0 / counts.astype(np.float64)        # inverse frequency
-    sample_weights = class_weights[cal_labels]             # one weight per sample
+    counts         = np.bincount(cal_labels)                # [n_normal, n_seizure]
+    class_weights  = 1.0 / counts.astype(np.float64)       # inverse frequency
+    sample_weights = class_weights[cal_labels]              # one weight per sample
     sampler = WeightedRandomSampler(
         weights     = torch.from_numpy(sample_weights).float(),
         num_samples = len(cal_dataset),
-        replacement = True,                                # necessary for oversampling
+        replacement = True,
     )
 
-    cal_loader  = DataLoader(
+    cal_loader = DataLoader(
         cal_dataset,
         batch_size  = batch_size,
-        sampler     = sampler,          # mutually exclusive with shuffle=True
+        sampler     = sampler,
         num_workers = 0,
         pin_memory  = device.type == "cuda",
     )
 
-    # Persist normalisation stats alongside the model for inference.
-    # simulate_realtime.py will load these and apply the identical transform.
-    norm_stats = {"ch_min": ch_min, "ch_max": ch_max}
+    # We no longer need to persist norm_stats because simulate_realtime.py
+    # uses EEGDataset directly.
+    norm_stats = {}
 
     print(f"[DATA] Calibration loader: {len(cal_dataset)} segments, "
           f"{len(cal_loader)} batches")
