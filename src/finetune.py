@@ -74,18 +74,18 @@ logger = logging.getLogger(__name__)
 
 def freeze_backbone(model: CNN_LSTM_Classifier) -> None:
     """
-    Freeze all parameters in the CNN and LSTM backbone.
-
-    Only ``model.fc`` parameters remain trainable.  This forces the
-    adapted model to keep the universal feature representations learned
-    during Phase 1 and adjusts only the final decision boundary to the
-    target patient's background noise.
+    Freeze the CNN backbone, but leave the LSTM and FC layers trainable.
+    This allows the model to learn patient-specific temporal rhythms.
     """
     # Freeze everything first
     for param in model.parameters():
         param.requires_grad = False
 
-    # Unfreeze only the classification head
+    # Unfreeze the LSTM temporal encoder
+    for param in model.lstm.parameters():
+        param.requires_grad = True
+
+    # Unfreeze the classification head
     for param in model.fc.parameters():
         param.requires_grad = True
 
@@ -200,8 +200,8 @@ def main(args: argparse.Namespace) -> None:
     print("=" * 68)
     print(f"  Target patient   : {target_patient}")
     print(f"  Calibration hours: {cal_hours:.2f} h  (FIRST portion of data)")
-    print(f"  Backbone frozen  : model.cnn + model.lstm")
-    print(f"  Head unfrozen    : model.fc  (only these weights update)")
+    print(f"  Backbone frozen  : model.cnn")
+    print(f"  Unfrozen         : model.lstm + model.fc  (gradual unfreezing)")
     print(f"  Epochs           : {n_epochs}")
     print(f"  Learning rate    : {lr}")
     print(f"  Device           : {device}")
@@ -416,8 +416,8 @@ if __name__ == "__main__":
         help="Learning rate for AdamW (default: 1e-5)",
     )
     parser.add_argument(
-        "--batch-size", type=int, default=64,
-        help="Batch size for calibration loader (default: 64)",
+        "--batch-size", type=int, default=32,
+        help="Batch size for calibration loader (default: 32)",
     )
     args = parser.parse_args()
     main(args)
