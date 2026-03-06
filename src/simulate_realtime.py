@@ -209,6 +209,13 @@ def stream_inference(
     # ------------------------------------------------------------------
     probs_arr  = np.array(all_probs, dtype=np.float32)
     labels_arr = np.array(all_labels, dtype=np.int64)
+
+    # --- DEBOUNCE FILTER ---
+    # Smooth probabilities over a 3-segment (12-second) rolling window
+    # to eliminate isolated 4-second false alarms.
+    from scipy.ndimage import median_filter
+    probs_arr = median_filter(probs_arr, size=3)
+
     total_hours = n_test * step_sec / 3600.0
 
     results: Dict[float, Dict] = {}
